@@ -167,7 +167,7 @@ class TreeGrower:
                  max_depth=None, min_samples_leaf=20, min_gain_to_split=0.,
                  n_bins=256, n_bins_non_missing=None, has_missing_values=False,
                  l2_regularization=0., min_hessian_to_split=1e-3,
-                 shrinkage=1.):
+                 shrinkage=1., epsilon_dp_leaves=None):
 
         self._validate_parameters(X_binned, max_leaf_nodes, max_depth,
                                   min_samples_leaf, min_gain_to_split,
@@ -210,6 +210,7 @@ class TreeGrower:
         self.total_find_split_time = 0.  # time spent finding the best splits
         self.total_compute_hist_time = 0.  # time spent computing histograms
         self.total_apply_split_time = 0.  # time spent splitting nodes
+        self.epsilon_dp_leaves = epsilon_dp_leaves
         self._intilialize_root(gradients, hessians, hessians_are_constant)
         self.n_nodes = 1
 
@@ -420,8 +421,19 @@ class TreeGrower:
         XGBoost: A Scalable Tree Boosting System, T. Chen, C. Guestrin, 2016
         https://arxiv.org/abs/1603.02754
         """
-        node.value = -self.shrinkage * node.sum_gradients / (
-            node.sum_hessians + self.splitter.l2_regularization + EPS)
+
+        ##### in case of square loss: node.sum_hessians == node.n_samples
+        ##### if in addition l2_regularization is 0, we have that this equation corresponds to equation (15)
+        ##### from InPrivateDigging paper!
+
+        # print(self.epsilon_dp_leaves)
+        if self.epsilon_dp_leaves:
+            dp_noise = np.random.laplace(0, 1 / (self.epsilon_dp_leaves * 2))
+        else:
+            dp_noise = 0
+        # print(dp_noise)
+        node.value = (-self.shrinkage * node.sum_gradients + dp_noise) / (
+            node.sum_hessians + self.splitter.l2_regularization + dp_noise + EPS)
         self.finalized_leaves.append(node)
 
     def _finalize_splittable_nodes(self):
@@ -498,3 +510,4 @@ def _fill_predictor_node_array(predictor_nodes, grower_node,
             bin_thresholds=bin_thresholds,
             n_bins_non_missing=n_bins_non_missing,
             next_free_idx=next_free_idx)
+

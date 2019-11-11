@@ -29,7 +29,7 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
     def __init__(self, loss, learning_rate, max_iter, max_leaf_nodes,
                  max_depth, min_samples_leaf, l2_regularization, max_bins,
                  warm_start, scoring, validation_fraction, n_iter_no_change,
-                 tol, verbose, random_state):
+                 tol, verbose, random_state, epsilon_dp_leaves):
         self.loss = loss
         self.learning_rate = learning_rate
         self.max_iter = max_iter
@@ -45,6 +45,7 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
         self.tol = tol
         self.verbose = verbose
         self.random_state = random_state
+        self.epsilon_dp_leaves = epsilon_dp_leaves
 
     def _validate_parameters(self):
         """Validate parameters passed to __init__.
@@ -150,6 +151,14 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
 
         has_missing_values = np.isnan(X_train).any(axis=0).astype(np.uint8)
 
+        ############ DIFFERENTIAL PRIVACY
+        # epsilon_dp = 1
+        # print(X_train + epsilon_dp)
+        # X_train += epsilon_dp
+
+        # noise_matrix = np.random.rand(X.shape[0], X_train.shape[1])
+        # X_train += 10*noise_matrix
+
         # Bin the data
         # For ease of use of the API, the user-facing GBDT classes accept the
         # parameter max_bins, which doesn't take into account the bin for
@@ -162,6 +171,11 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
         self.bin_mapper_ = _BinMapper(n_bins=n_bins,
                                       random_state=self._random_seed)
         X_binned_train = self._bin_data(X_train, is_training_data=True)
+
+        ############ DATA vs BINNED DATA
+        # tmp = np.hstack((X_binned_train, X_train))
+        # print(tmp)
+
         if X_val is not None:
             X_binned_val = self._bin_data(X_val, is_training_data=False)
         else:
@@ -190,7 +204,6 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
                 dtype=self._baseline_prediction.dtype
             )
             raw_predictions += self._baseline_prediction
-
             # initialize gradients and hessians (empty arrays).
             # shape = (n_trees_per_iteration, n_samples).
             gradients, hessians = self.loss_.init_gradients_and_hessians(
@@ -198,6 +211,8 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
                 prediction_dim=self.n_trees_per_iteration_
             )
 
+
+            ########## when using Regressor we always have n_trees_per_iteration = 1
             # predictors is a matrix (list of lists) of TreePredictor objects
             # with shape (n_iter_, n_trees_per_iteration)
             self._predictors = predictors = []
@@ -268,6 +283,8 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
             self.train_score_ = self.train_score_.tolist()
             self.validation_score_ = self.validation_score_.tolist()
 
+
+            ########## Return the sum of the leaves values over all predictors.
             # Compute raw predictions
             raw_predictions = self._raw_predict(X_binned_train)
 
@@ -304,6 +321,7 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
             # Build `n_trees_per_iteration` trees.
             for k in range(self.n_trees_per_iteration_):
 
+                ####### TREE CONSTRUCTION
                 grower = TreeGrower(
                     X_binned_train, gradients[k, :], hessians[k, :],
                     n_bins=n_bins,
@@ -313,7 +331,8 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
                     max_depth=self.max_depth,
                     min_samples_leaf=self.min_samples_leaf,
                     l2_regularization=self.l2_regularization,
-                    shrinkage=self.learning_rate)
+                    shrinkage=self.learning_rate,
+                    epsilon_dp_leaves=self.epsilon_dp_leaves)
                 grower.grow()
 
                 acc_apply_split_time += grower.total_apply_split_time
@@ -327,6 +346,7 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
                 predictor = grower.make_predictor(
                     bin_thresholds=self.bin_mapper_.bin_thresholds_
                 )
+                # print(predictor.nodes[predictor.nodes['is_leaf']])
                 predictors[-1].append(predictor)
 
                 # Update raw_predictions with the predictions of the newly
@@ -782,7 +802,7 @@ class HistGradientBoostingRegressor(RegressorMixin, BaseHistGradientBoosting):
                  min_samples_leaf=20, l2_regularization=0., max_bins=255,
                  warm_start=False, scoring=None, validation_fraction=0.1,
                  n_iter_no_change=None, tol=1e-7, verbose=0,
-                 random_state=None):
+                 random_state=None, epsilon_dp_leaves=None):
         super(HistGradientBoostingRegressor, self).__init__(
             loss=loss, learning_rate=learning_rate, max_iter=max_iter,
             max_leaf_nodes=max_leaf_nodes, max_depth=max_depth,
@@ -791,7 +811,7 @@ class HistGradientBoostingRegressor(RegressorMixin, BaseHistGradientBoosting):
             warm_start=warm_start, scoring=scoring,
             validation_fraction=validation_fraction,
             n_iter_no_change=n_iter_no_change, tol=tol, verbose=verbose,
-            random_state=random_state)
+            random_state=random_state, epsilon_dp_leaves=epsilon_dp_leaves)
 
     def predict(self, X):
         """Predict values for X.
@@ -965,7 +985,7 @@ class HistGradientBoostingClassifier(BaseHistGradientBoosting,
                  max_leaf_nodes=31, max_depth=None, min_samples_leaf=20,
                  l2_regularization=0., max_bins=255, warm_start=False,
                  scoring=None, validation_fraction=0.1, n_iter_no_change=None,
-                 tol=1e-7, verbose=0, random_state=None):
+                 tol=1e-7, verbose=0, random_state=None, epsilon_dp_leaves=None):
         super(HistGradientBoostingClassifier, self).__init__(
             loss=loss, learning_rate=learning_rate, max_iter=max_iter,
             max_leaf_nodes=max_leaf_nodes, max_depth=max_depth,
@@ -974,7 +994,7 @@ class HistGradientBoostingClassifier(BaseHistGradientBoosting,
             warm_start=warm_start, scoring=scoring,
             validation_fraction=validation_fraction,
             n_iter_no_change=n_iter_no_change, tol=tol, verbose=verbose,
-            random_state=random_state)
+            random_state=random_state, epsilon_dp_leaves=epsilon_dp_leaves)
 
     def predict(self, X):
         """Predict classes for X.
@@ -1059,3 +1079,4 @@ class HistGradientBoostingClassifier(BaseHistGradientBoosting,
                 return _LOSSES['categorical_crossentropy']()
 
         return _LOSSES[self.loss]()
+
