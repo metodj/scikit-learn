@@ -291,10 +291,13 @@ class TreeGrower:
         (best gain = 0), or if no split would satisfy the constraints,
         (min_hessians_to_split, min_gain_to_split, min_samples_leaf)
         """
-
+        max_nr_bins = max(self.n_bins_non_missing + 1)
+        # print(max_nr_bins)
         node.split_info = self.splitter.find_node_split(
-            node.n_samples, node.histograms, node.sum_gradients,
+            node.n_samples, max_nr_bins, self.n_features, node.histograms, node.sum_gradients,
             node.sum_hessians)
+
+        # print(node.split_info.feature_idx)
 
         if node.split_info.gain <= 0:  # no valid split
             self._finalize_leaf(node)
