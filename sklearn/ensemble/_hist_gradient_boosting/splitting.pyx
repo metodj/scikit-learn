@@ -40,7 +40,10 @@ cdef struct split_info_struct:
     unsigned int n_samples_left
     unsigned int n_samples_right
     # # (3) having list as an attribute of the SplitInfo class, store all gain values from a feature in it
-    # Y_DTYPE_C* test_list
+    Y_DTYPE_C test_list[44]
+    # to get rid of hardcoding the length of the array (since it should be max_nr_bin) see 1st comment here:
+    # https://stackoverflow.com/questions/53763480/error-message-cannot-convert-double-to-python-object-in-cython
+
 
 
 class SplitInfo:
@@ -84,7 +87,7 @@ class SplitInfo:
         self.n_samples_left = n_samples_left
         self.n_samples_right = n_samples_right
         # # (3) having list as an attribute of the SplitInfo class, store all gain values from a feature in it
-        # self.test_list = np.zeros(shape=(44))
+        self.test_list = np.zeros(shape=(44))
 
 
 @cython.final
@@ -392,8 +395,10 @@ cdef class Splitter:
 
             split_infos = <split_info_struct *> malloc(
                 self.n_features * sizeof(split_info_struct))
-            bin_gains = <Y_DTYPE_C **> malloc(
-                 self.n_features * max_nr_bin * sizeof(Y_DTYPE_C))
+
+            #  # (1) multithreading error:
+            # bin_gains = <Y_DTYPE_C **> malloc(
+            #      self.n_features * max_nr_bin * sizeof(Y_DTYPE_C))
 
             for feature_idx in prange(n_features, schedule='static'):
                 # For each feature, find best bin to split on
@@ -456,6 +461,10 @@ cdef class Splitter:
             EPSILON = 5
             DELTA = 4
             gains_ = [x['gain'] for x in split_infos_]
+            test_ = [x['test_list'] for x in split_infos_]
+            print([max(x) for x in test_])
+            print(test_)
+            print(gains_)
             gains = [np.exp((EPSILON*x['gain'])/(DELTA*2)) for x in split_infos_]
             gains_norm = [i/sum(gains) for i in gains]
             ind_diff = np.argmax(np.random.multinomial(1, pvals=gains_norm))
@@ -477,7 +486,7 @@ cdef class Splitter:
             split_info.n_samples_right,
         )
         free(split_infos)
-        free(bin_gains)
+        # free(bin_gains)
 
         # # (2) comparing max gain with
         # print("compare")
@@ -551,6 +560,7 @@ cdef class Splitter:
             n_samples_left += histograms[feature_idx, bin_idx].count
             n_samples_right = n_samples_ - n_samples_left
 
+
             if self.hessians_are_constant:
                 sum_hessian_left += histograms[feature_idx, bin_idx].count
             else:
@@ -578,8 +588,8 @@ cdef class Splitter:
                                negative_loss_current_node,
                                self.l2_regularization)
 
-            # # (3) having list as an attribute of the SplitInfo class, store all gain values from a feature in it
-            # split_info.test_list[bin_idx] = gain
+            # (3) having list as an attribute of the SplitInfo class, store all gain values from a feature in it
+            split_info.test_list[bin_idx] = gain
 
             if gain > split_info.gain and gain > self.min_gain_to_split:
                 split_info.gain = gain
