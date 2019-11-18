@@ -167,7 +167,7 @@ class TreeGrower:
                  max_depth=None, min_samples_leaf=20, min_gain_to_split=0.,
                  n_bins=256, n_bins_non_missing=None, has_missing_values=False,
                  l2_regularization=0., min_hessian_to_split=1e-3,
-                 shrinkage=1., epsilon_dp_leaves=None):
+                 shrinkage=1., epsilon_dp_leaves=None, epsilon_dp_internal_nodes=0.0):
 
         self._validate_parameters(X_binned, max_leaf_nodes, max_depth,
                                   min_samples_leaf, min_gain_to_split,
@@ -195,7 +195,7 @@ class TreeGrower:
         self.splitter = Splitter(
             X_binned, n_bins_non_missing, missing_values_bin_idx,
             has_missing_values, l2_regularization, min_hessian_to_split,
-            min_samples_leaf, min_gain_to_split, hessians_are_constant)
+            min_samples_leaf, min_gain_to_split, hessians_are_constant, epsilon_dp_internal_nodes)
         self.n_bins_non_missing = n_bins_non_missing
         self.max_leaf_nodes = max_leaf_nodes
         self.has_missing_values = has_missing_values
