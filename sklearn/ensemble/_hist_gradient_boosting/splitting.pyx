@@ -40,6 +40,7 @@ cdef struct split_info_struct:
     unsigned int n_samples_left
     unsigned int n_samples_right
     # # (3) having list as an attribute of the SplitInfo class, store all gain values from a feature in it
+    # TODO: get rid of hardcoding the length of test_list array
     Y_DTYPE_C test_list[44]
     # to get rid of hardcoding the length of the array (since it should be max_nr_bin) see 1st comment here:
     # https://stackoverflow.com/questions/53763480/error-message-cannot-convert-double-to-python-object-in-cython
@@ -458,20 +459,30 @@ cdef class Splitter:
         # DIFF. PRIVATE sampling for splitting
         if self.epsilon_dp_internal_nodes > 0:
             split_infos_ = [x for x in split_infos[:n_features]]
-            EPSILON = 5
             DELTA = 4
-            gains_ = [x['gain'] for x in split_infos_]
+            gains_sklearn = [x['gain'] for x in split_infos_]
+            # TODO: sample randomly from test_ array
+            # TODO: sample only indices that are valid, i.e. the ones for which we didn't continue in the for loop and the ones that are before end index in a given row in a 2d array test_
+            # TODO: retrieve all info for sampled index and make a SplitInfo object
             test_ = [x['test_list'] for x in split_infos_]
-            print([max(x) for x in test_])
-            print(test_)
-            print(gains_)
-            gains = [np.exp((EPSILON*x['gain'])/(DELTA*2)) for x in split_infos_]
+            gains_manual = [max(x) for x in test_]
+
+            sanity_check = all([gains_sklearn[i] in test_[i] for i in range(4)])
+            if not sanity_check:
+                print(test_)
+                print(gains_sklearn)
+                print(gains_manual)
+
+            gains = [np.exp((self.epsilon_dp_internal_nodes*x['gain'])/(DELTA*2)) for x in split_infos_]
             gains_norm = [i/sum(gains) for i in gains]
             ind_diff = np.argmax(np.random.multinomial(1, pvals=gains_norm))
             split_info = split_infos_[ind_diff]
 
-        print("Best feature ID: ", best_feature_idx)
-        print("Diff. private ID: ", split_info.feature_idx)
+        # print(self.n_bins_non_missing[0] - 1)
+        # print(self.has_missing_values)
+
+        # print("Best feature ID: ", best_feature_idx)
+        # print("Diff. private ID: ", split_info.feature_idx)
 
         out = SplitInfo(
             split_info.gain,
@@ -555,6 +566,10 @@ cdef class Splitter:
                                                    sum_hessians,
                                                    self.l2_regularization)
 
+        # TODO: make initialiation of test_list nicer (probably will have to do it in definition of struct split_info_struct)
+        for i in range(44):
+            split_info.test_list[i] = -1
+
 
         for bin_idx in range(end):
             n_samples_left += histograms[feature_idx, bin_idx].count
@@ -589,7 +604,9 @@ cdef class Splitter:
                                self.l2_regularization)
 
             # (3) having list as an attribute of the SplitInfo class, store all gain values from a feature in it
-            split_info.test_list[bin_idx] = gain
+            if gain > self.min_gain_to_split:
+                split_info.test_list[bin_idx] = gain
+
 
             if gain > split_info.gain and gain > self.min_gain_to_split:
                 split_info.gain = gain
@@ -604,6 +621,7 @@ cdef class Splitter:
                 split_info.n_samples_left = n_samples_left
                 split_info.n_samples_right = n_samples_right
 
+    # TODO: modify as L2R function above
     cdef void _find_best_bin_to_split_right_to_left(
             self,
             unsigned int feature_idx,
@@ -689,194 +707,6 @@ cdef class Splitter:
                 split_info.n_samples_left = n_samples_left
                 split_info.n_samples_right = n_samples_right
 
-    # cdef void _find_best_bin_to_split_left_to_right_mod(
-    #         Splitter self,
-    #         unsigned int feature_idx,
-    #         const unsigned char has_missing_values,
-    #         const hist_struct [:, ::1] histograms,  # IN
-    #         unsigned int n_samples,
-    #         Y_DTYPE_C sum_gradients,
-    #         Y_DTYPE_C sum_hessians,
-    #         split_info_struct * split_info, # OUT
-    #         Y_DTYPE_C * gain_array,
-    #         const unsigned int max_nr_bin) nogil:
-    #     """Find best bin to split on for a given feature.
-    #
-    #     Splits that do not satisfy the splitting constraints
-    #     (min_gain_to_split, etc.) are discarded here.
-    #
-    #     We scan node from left to right. This version is called whether there
-    #     are missing values or not. If any, missing values are assigned to the
-    #     right node.
-    #     """
-    #     cdef:
-    #         unsigned int bin_idx
-    #         unsigned int n_samples_left
-    #         unsigned int n_samples_right
-    #         unsigned int n_samples_ = n_samples
-    #         # We set the 'end' variable such that the last non-missing-values
-    #         # bin never goes to the left child (which would result in and
-    #         # empty right child), unless there are missing values, since these
-    #         # would go to the right child.
-    #         unsigned int end = \
-    #             self.n_bins_non_missing[feature_idx] - 1 + has_missing_values
-    #         Y_DTYPE_C sum_hessian_left
-    #         Y_DTYPE_C sum_hessian_right
-    #         Y_DTYPE_C sum_gradient_left
-    #         Y_DTYPE_C sum_gradient_right
-    #         Y_DTYPE_C negative_loss_current_node
-    #         Y_DTYPE_C gain
-    #         # Y_DTYPE_C[:] gain_array = np.zeros(shape=(max_nr_bin))
-    #         # Y_DTYPE_C gain_array[max_nr_bin]
-    #
-    #     sum_gradient_left, sum_hessian_left = 0., 0.
-    #     n_samples_left = 0
-    #     negative_loss_current_node = negative_loss(sum_gradients,
-    #                                                sum_hessians,
-    #                                                self.l2_regularization)
-    #
-    #
-    #     for bin_idx in range(end):
-    #         n_samples_left += histograms[feature_idx, bin_idx].count
-    #         n_samples_right = n_samples_ - n_samples_left
-    #
-    #         if self.hessians_are_constant:
-    #             sum_hessian_left += histograms[feature_idx, bin_idx].count
-    #         else:
-    #             sum_hessian_left += \
-    #                 histograms[feature_idx, bin_idx].sum_hessians
-    #         sum_hessian_right = sum_hessians - sum_hessian_left
-    #
-    #         sum_gradient_left += histograms[feature_idx, bin_idx].sum_gradients
-    #         sum_gradient_right = sum_gradients - sum_gradient_left
-    #
-    #         if n_samples_left < self.min_samples_leaf:
-    #             continue
-    #         if n_samples_right < self.min_samples_leaf:
-    #             # won't get any better
-    #             break
-    #
-    #         if sum_hessian_left < self.min_hessian_to_split:
-    #             continue
-    #         if sum_hessian_right < self.min_hessian_to_split:
-    #             # won't get any better (hessians are > 0 since loss is convex)
-    #             break
-    #
-    #         gain = _split_gain(sum_gradient_left, sum_hessian_left,
-    #                            sum_gradient_right, sum_hessian_right,
-    #                            negative_loss_current_node,
-    #                            self.l2_regularization)
-    #         # gain_array[feature_idx][bin_idx] = gain
-    #         gain_array[bin_idx] = gain
-    #
-    #         if gain > split_info.gain and gain > self.min_gain_to_split:
-    #             split_info.gain = gain
-    #             split_info.feature_idx = feature_idx
-    #             split_info.bin_idx = bin_idx
-    #             # we scan from left to right so missing values go to the right
-    #             split_info.missing_go_to_left = False
-    #             split_info.sum_gradient_left = sum_gradient_left
-    #             split_info.sum_gradient_right = sum_gradient_right
-    #             split_info.sum_hessian_left = sum_hessian_left
-    #             split_info.sum_hessian_right = sum_hessian_right
-    #             split_info.n_samples_left = n_samples_left
-    #             split_info.n_samples_right = n_samples_right
-    #
-    #     # return gain_array
-    #
-    # cdef Y_DTYPE_C _find_best_bin_to_split_right_to_left_mod(
-    #         self,
-    #         unsigned int feature_idx,
-    #         const hist_struct [:, ::1] histograms,  # IN
-    #         unsigned int n_samples,
-    #         Y_DTYPE_C sum_gradients,
-    #         Y_DTYPE_C sum_hessians,
-    #         split_info_struct * split_info,  # OUT
-    #         unsigned int max_nr_bin) nogil:
-    #     """Find best bin to split on for a given feature.
-    #
-    #     Splits that do not satisfy the splitting constraints
-    #     (min_gain_to_split, etc.) are discarded here.
-    #
-    #     We scan node from right to left. This version is only called when
-    #     there are missing values. Missing values are assigned to the left
-    #     child.
-    #
-    #     If no missing value are present in the data this method isn't called
-    #     since only calling _find_best_bin_to_split_left_to_right is enough.
-    #     """
-    #
-    #     cdef:
-    #         unsigned int bin_idx
-    #         unsigned int n_samples_left
-    #         unsigned int n_samples_right
-    #         unsigned int n_samples_ = n_samples
-    #         Y_DTYPE_C sum_hessian_left
-    #         Y_DTYPE_C sum_hessian_right
-    #         Y_DTYPE_C sum_gradient_left
-    #         Y_DTYPE_C sum_gradient_right
-    #         Y_DTYPE_C negative_loss_current_node
-    #         Y_DTYPE_C gain
-    #         # Y_DTYPE_C[:] gain_array = np.zeros(shape=(max_nr_bin))
-    #         # Y_DTYPE_C gain_array[max_nr_bin]
-    #         unsigned int start = self.n_bins_non_missing[feature_idx] - 2
-    #         int counter = 0
-    #
-    #     sum_gradient_right, sum_hessian_right = 0., 0.
-    #     n_samples_right = 0
-    #     # Y_DTYPE_C [:] = np.zeros((start))
-    #     negative_loss_current_node = negative_loss(sum_gradients,
-    #                                                sum_hessians,
-    #                                                self.l2_regularization)
-    #
-    #     for bin_idx in range(start, -1, -1):
-    #         n_samples_right += histograms[feature_idx, bin_idx + 1].count
-    #         n_samples_left = n_samples_ - n_samples_right
-    #
-    #         if self.hessians_are_constant:
-    #             sum_hessian_right += histograms[feature_idx, bin_idx + 1].count
-    #         else:
-    #             sum_hessian_right += \
-    #                 histograms[feature_idx, bin_idx + 1].sum_hessians
-    #         sum_hessian_left = sum_hessians - sum_hessian_right
-    #
-    #         sum_gradient_right += \
-    #             histograms[feature_idx, bin_idx + 1].sum_gradients
-    #         sum_gradient_left = sum_gradients - sum_gradient_right
-    #
-    #         if n_samples_right < self.min_samples_leaf:
-    #             continue
-    #         if n_samples_left < self.min_samples_leaf:
-    #             # won't get any better
-    #             break
-    #
-    #         if sum_hessian_right < self.min_hessian_to_split:
-    #             continue
-    #         if sum_hessian_left < self.min_hessian_to_split:
-    #             # won't get any better (hessians are > 0 since loss is convex)
-    #             break
-    #
-    #         gain = _split_gain(sum_gradient_left, sum_hessian_left,
-    #                            sum_gradient_right, sum_hessian_right,
-    #                            negative_loss_current_node,
-    #                            self.l2_regularization)
-    #
-    #         # gain_array[counter] = gain
-    #         counter += 1
-    #
-    #         if gain > split_info.gain and gain > self.min_gain_to_split:
-    #             split_info.gain = gain
-    #             split_info.feature_idx = feature_idx
-    #             split_info.bin_idx = bin_idx
-    #             # we scan from right to left so missing values go to the left
-    #             split_info.missing_go_to_left = True
-    #             split_info.sum_gradient_left = sum_gradient_left
-    #             split_info.sum_gradient_right = sum_gradient_right
-    #             split_info.sum_hessian_left = sum_hessian_left
-    #             split_info.sum_hessian_right = sum_hessian_right
-    #             split_info.n_samples_left = n_samples_left
-    #             split_info.n_samples_right = n_samples_right
-    #     return gain
 
 cdef inline Y_DTYPE_C _split_gain(
         Y_DTYPE_C sum_gradient_left,

@@ -8,7 +8,7 @@ from sklearn.datasets import load_iris
 np.set_printoptions(threshold=sys.maxsize)
 X, y = load_iris(return_X_y=True)
 # clf = HistGradientBoostingClassifier(loss='categorical_crossentropy', epsilon_dp_leaves=0.9).fit(X, y)
-clf = HistGradientBoostingRegressor(max_bins=255, epsilon_dp_leaves=0.7).fit(X, y)
+clf = HistGradientBoostingRegressor(max_bins=255, epsilon_dp_leaves=0.7, epsilon_dp_internal_nodes=0.001).fit(X, y)
 print(clf.epsilon_dp_leaves)
 a = clf.score(X, y)
 
