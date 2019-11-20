@@ -39,9 +39,9 @@ cdef struct split_info_struct:
     Y_DTYPE_C sum_hessian_right
     unsigned int n_samples_left
     unsigned int n_samples_right
-    # # (3) having list as an attribute of the SplitInfo class, store all gain values from a feature in it
-    # TODO: get rid of hardcoding the length of test_list array
-    Y_DTYPE_C test_list[44]
+    # TODO: get rid of hardcoding the length of test_list array, at the moment it is hardcoded to max_bin (which makes sense...)
+    Y_DTYPE_C test_list[256]
+
     # to get rid of hardcoding the length of the array (since it should be max_nr_bin) see 1st comment here:
     # https://stackoverflow.com/questions/53763480/error-message-cannot-convert-double-to-python-object-in-cython
 
@@ -87,8 +87,8 @@ class SplitInfo:
         self.sum_hessian_right = sum_hessian_right
         self.n_samples_left = n_samples_left
         self.n_samples_right = n_samples_right
-        # # (3) having list as an attribute of the SplitInfo class, store all gain values from a feature in it
-        self.test_list = np.zeros(shape=(44))
+        # TODO: get rid of hardcoding the length of test_list array, at the moment it is hardcoded to max_bin (which makes sense...)
+        self.test_list = np.zeros(shape=(256))
 
 
 @cython.final
@@ -356,6 +356,35 @@ cdef class Splitter:
                 sample_indices[right_child_position:],
                 right_child_position)
 
+    def dp_step_inner_nodes(self, gain_array, delta=4):
+        """
+        Retrieve values and indices of positive gains from gain_array.
+
+
+        :param gain_array: array of gains for each potential split points. Dimension: nr_features x max_bin
+        :return: feature_id and bin_id of the sampled candidate split
+        """
+        gain_array = np.array(gain_array)
+        gain_array_ind = np.argwhere(gain_array > -1)
+
+        # if feature had no positive split we add first bin with value -1 to the sampling candidates
+        features_with_positive_split = list(set([gain_array_ind[i,0] for i in range(gain_array_ind.shape[0])]))
+        for i in range(self.n_features):
+            if i not in features_with_positive_split:
+                gain_array_ind = np.vstack((gain_array_ind, [i,0]))
+
+        # retrieve gains for valid bins
+        gains = [gain_array[gain_array_ind[i,0], gain_array_ind[i,1]] for i in range(gain_array_ind.shape[0])]
+
+        # exponential mechanism
+        gains_exp = [np.exp((self.epsilon_dp_internal_nodes*x)/(delta*2)) for x in gains]
+        gains_exp = [i/sum(gains_exp) for i in gains_exp]
+        sampled_bin_ind = np.argmax(np.random.multinomial(1, pvals=gains_exp))
+        sampled_bin = gain_array_ind[sampled_bin_ind, : ]
+
+        return sampled_bin
+
+
     def find_node_split(
             Splitter self,
             unsigned int n_samples,
@@ -397,10 +426,6 @@ cdef class Splitter:
             split_infos = <split_info_struct *> malloc(
                 self.n_features * sizeof(split_info_struct))
 
-            #  # (1) multithreading error:
-            # bin_gains = <Y_DTYPE_C **> malloc(
-            #      self.n_features * max_nr_bin * sizeof(Y_DTYPE_C))
-
             for feature_idx in prange(n_features, schedule='static'):
                 # For each feature, find best bin to split on
                 # Start with a gain of -1 (if no better split is found, that
@@ -417,20 +442,6 @@ cdef class Splitter:
                 # See algo 3 from the XGBoost paper
                 # https://arxiv.org/abs/1603.02754
 
-                # [18.11.2019] 2 attempts to retrieve 2d array of gains
-
-                # # (1) multithreading error: Process finished with exit code 139 (interrupted by signal 11: SIGSEGV)
-                # self._find_best_bin_to_split_left_to_right_mod(
-                #     feature_idx, has_missing_values[feature_idx],
-                #     histograms, n_samples, sum_gradients, sum_hessians,
-                #     &split_infos[feature_idx], &bin_gains, max_nr_bin)
-
-                # # (2) only one row gets assigned here... for output see bin_gains_ array printed below.
-                # # to reproduce it, have to change _find_best_bin_to_split_left_to_right_mod to return Y_TYPE_C and not void
-                # bin_gains[feature_idx] = self._find_best_bin_to_split_left_to_right_mod(
-                #     feature_idx, has_missing_values[feature_idx],
-                #     histograms, n_samples, sum_gradients, sum_hessians,
-                #     &split_infos[feature_idx], max_nr_bin)
 
                 self._find_best_bin_to_split_left_to_right(
                     feature_idx, has_missing_values[feature_idx],
@@ -450,39 +461,22 @@ cdef class Splitter:
                 split_infos)
             split_info = split_infos[best_feature_idx]
 
-        # # (2) converting C array to python array. Could probably be done in a nicer way
-        # bin_gains_ = []
-        # for i in range(n_features):
-        #     for j in range(max_nr_bin):
-        #         bin_gains_.append(bin_gains[i][j])
 
         # DIFF. PRIVATE sampling for splitting
         if self.epsilon_dp_internal_nodes > 0:
+
+            # gains_sklearn = [x['gain'] for x in split_infos_]
+            # gains_manual = [max(x) for x in test_]
+            # print(gains_sklearn)
+            # print(gains_manual)
+
             split_infos_ = [x for x in split_infos[:n_features]]
-            DELTA = 4
-            gains_sklearn = [x['gain'] for x in split_infos_]
-            # TODO: sample randomly from test_ array
-            # TODO: sample only indices that are valid, i.e. the ones for which we didn't continue in the for loop and the ones that are before end index in a given row in a 2d array test_
-            # TODO: retrieve all info for sampled index and make a SplitInfo object
             test_ = [x['test_list'] for x in split_infos_]
-            gains_manual = [max(x) for x in test_]
+            sampled_split = self.dp_step_inner_nodes(test_)
+            feature_idx_, bin_idx_ = int(sampled_split[0]), int(sampled_split[1])
+            out_dp = self._sampled_split_to_split_info(feature_idx_, bin_idx_, has_missing_values[feature_idx],
+                                                histograms, n_samples, sum_gradients, sum_hessians)
 
-            sanity_check = all([gains_sklearn[i] in test_[i] for i in range(4)])
-            if not sanity_check:
-                print(test_)
-                print(gains_sklearn)
-                print(gains_manual)
-
-            gains = [np.exp((self.epsilon_dp_internal_nodes*x['gain'])/(DELTA*2)) for x in split_infos_]
-            gains_norm = [i/sum(gains) for i in gains]
-            ind_diff = np.argmax(np.random.multinomial(1, pvals=gains_norm))
-            split_info = split_infos_[ind_diff]
-
-        # print(self.n_bins_non_missing[0] - 1)
-        # print(self.has_missing_values)
-
-        # print("Best feature ID: ", best_feature_idx)
-        # print("Diff. private ID: ", split_info.feature_idx)
 
         out = SplitInfo(
             split_info.gain,
@@ -497,16 +491,9 @@ cdef class Splitter:
             split_info.n_samples_right,
         )
         free(split_infos)
-        # free(bin_gains)
 
-        # # (2) comparing max gain with
-        # print("compare")
-        # print(out.gain)
-        # print(max(bin_gains_))
-        # print([x['gain'] for x in split_infos_])
-        # bin_gains_arr = np.array(bin_gains_).reshape((n_features, -1))
-        # print(bin_gains_arr)
-        # print(bin_gains_arr.max(axis=1))
+        print("DP: ", out_dp.feature_idx, out_dp.bin_idx, out_dp.gain)
+        print("Sklearn: ", out.feature_idx, out.bin_idx, out.gain)
 
         return out
 
@@ -523,6 +510,96 @@ cdef class Splitter:
                     split_infos[best_feature_idx].gain):
                 best_feature_idx = feature_idx
         return best_feature_idx
+
+    cdef split_info_struct _sampled_split_to_split_info(
+            Splitter self,
+            unsigned int feature_idx,
+            unsigned int bin_idx,
+            unsigned char has_missing_values,
+            const hist_struct [:, ::1] histograms,  # IN
+            unsigned int n_samples,
+            Y_DTYPE_C sum_gradients,
+            Y_DTYPE_C sum_hessians) :
+        """
+        
+        :param feature_idx: 
+        :param bin_idx: 
+        :param has_missing_values: 
+        :param histograms: 
+        :param n_samples: 
+        :param sum_gradients: 
+        :param sum_hessians: 
+        :return: 
+        """
+        cdef:
+            unsigned int n_samples_left
+            unsigned int n_samples_right
+            unsigned int n_samples_ = n_samples
+            Y_DTYPE_C sum_hessian_left
+            Y_DTYPE_C sum_hessian_right
+            Y_DTYPE_C sum_gradient_left
+            Y_DTYPE_C sum_gradient_right
+            Y_DTYPE_C negative_loss_current_node
+            Y_DTYPE_C gain
+            split_info_struct split_info
+
+        sum_gradient_left, sum_hessian_left = 0., 0.
+        n_samples_left = 0
+        negative_loss_current_node = negative_loss(sum_gradients,
+                                                   sum_hessians,
+                                                   self.l2_regularization)
+
+
+
+        # TODO: figure out if can get rid of for loop
+        for i in range(bin_idx + 1):
+            n_samples_left += histograms[feature_idx, i].count
+            sum_gradient_left += histograms[feature_idx, i].sum_gradients
+            if self.hessians_are_constant:
+                sum_hessian_left += histograms[feature_idx, i].count
+            else:
+                sum_hessian_left += histograms[feature_idx, i].sum_hessians
+
+        n_samples_right = n_samples_ - n_samples_left
+        sum_gradient_right = sum_gradients - sum_gradient_left
+        sum_hessian_right = sum_hessians - sum_hessian_left
+
+
+        # TODO: figure out what to do in case illegal split was sampled
+        if n_samples_left < self.min_samples_leaf:
+            print("Illegal split was sampled")
+        if n_samples_right < self.min_samples_leaf:
+            print("Illegal split was sampled")
+        if sum_hessian_left < self.min_hessian_to_split:
+            print("Illegal split was sampled")
+
+        if sum_hessian_right < self.min_hessian_to_split:
+            print("Illegal split was sampled")
+
+        gain = _split_gain(sum_gradient_left, sum_hessian_left,
+                           sum_gradient_right, sum_hessian_right,
+                           negative_loss_current_node,
+                           self.l2_regularization)
+
+        if gain < self.min_gain_to_split:
+            print("Illegal split was sampled")
+
+        split_info.gain = gain
+        split_info.feature_idx = feature_idx
+        split_info.bin_idx = bin_idx
+        # we scan from left to right so missing values go to the right
+        split_info.missing_go_to_left = False
+        split_info.sum_gradient_left = sum_gradient_left
+        split_info.sum_gradient_right = sum_gradient_right
+        split_info.sum_hessian_left = sum_hessian_left
+        split_info.sum_hessian_right = sum_hessian_right
+        split_info.n_samples_left = n_samples_left
+        split_info.n_samples_right = n_samples_right
+
+        # TODO: add R2L part (in case feature has None values)
+
+        return split_info
+
 
     cdef void _find_best_bin_to_split_left_to_right(
             Splitter self,
@@ -567,8 +644,9 @@ cdef class Splitter:
                                                    self.l2_regularization)
 
         # TODO: make initialiation of test_list nicer (probably will have to do it in definition of struct split_info_struct)
-        for i in range(44):
+        for i in range(256):
             split_info.test_list[i] = -1
+
 
 
         for bin_idx in range(end):
