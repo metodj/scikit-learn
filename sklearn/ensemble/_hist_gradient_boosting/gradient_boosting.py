@@ -804,7 +804,7 @@ class HistGradientBoostingRegressor(RegressorMixin, BaseHistGradientBoosting):
                  min_samples_leaf=20, l2_regularization=0., max_bins=255,
                  warm_start=False, scoring=None, validation_fraction=0.1,
                  n_iter_no_change=None, tol=1e-7, verbose=0,
-                 random_state=None, epsilon_dp_leaves=None, epsilon_dp_internal_nodes=0.0):
+                 random_state=None, epsilon_dp_leaves=None, epsilon_dp_internal_nodes=-1.0):
         super(HistGradientBoostingRegressor, self).__init__(
             loss=loss, learning_rate=learning_rate, max_iter=max_iter,
             max_leaf_nodes=max_leaf_nodes, max_depth=max_depth,
@@ -988,7 +988,7 @@ class HistGradientBoostingClassifier(BaseHistGradientBoosting,
                  max_leaf_nodes=31, max_depth=None, min_samples_leaf=20,
                  l2_regularization=0., max_bins=255, warm_start=False,
                  scoring=None, validation_fraction=0.1, n_iter_no_change=None,
-                 tol=1e-7, verbose=0, random_state=None, epsilon_dp_leaves=None, epsilon_dp_internal_nodes=0.0):
+                 tol=1e-7, verbose=0, random_state=None, epsilon_dp_leaves=None, epsilon_dp_internal_nodes=-1.0):
         super(HistGradientBoostingClassifier, self).__init__(
             loss=loss, learning_rate=learning_rate, max_iter=max_iter,
             max_leaf_nodes=max_leaf_nodes, max_depth=max_depth,

@@ -167,7 +167,7 @@ class TreeGrower:
                  max_depth=None, min_samples_leaf=20, min_gain_to_split=0.,
                  n_bins=256, n_bins_non_missing=None, has_missing_values=False,
                  l2_regularization=0., min_hessian_to_split=1e-3,
-                 shrinkage=1., epsilon_dp_leaves=None, epsilon_dp_internal_nodes=0.0):
+                 shrinkage=1., epsilon_dp_leaves=None, epsilon_dp_internal_nodes=-1.0):
 
         self._validate_parameters(X_binned, max_leaf_nodes, max_depth,
                                   min_samples_leaf, min_gain_to_split,
@@ -425,11 +425,10 @@ class TreeGrower:
         https://arxiv.org/abs/1603.02754
         """
 
-        ##### in case of square loss: node.sum_hessians == node.n_samples
-        ##### if in addition l2_regularization is 0, we have that this equation corresponds to equation (15)
-        ##### from InPrivateDigging paper!
+        # in case of square loss: node.sum_hessians == node.n_samples
+        # if in addition l2_regularization is 0, we have that this equation corresponds to equation (15)
+        # from InPrivateDigging paper!
 
-        # print(self.epsilon_dp_leaves)
         if self.epsilon_dp_leaves:
             dp_noise = np.random.laplace(0, 1 / (self.epsilon_dp_leaves * 2))
         else:
