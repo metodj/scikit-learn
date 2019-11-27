@@ -8,49 +8,14 @@ from sklearn.metrics import confusion_matrix
 EPSILONS = [0.01, 0.1, 0.3, 0.5, 0.7, 1, 2, 3, 4, 5]
 
 
-def run_model(model_, X, y):
+
+
+def eval_preds(y_true, y_pred):
     """
-    Test utility-privacy tradeoff on Iris dataset in-sample.
-
-    :param model_: sklearn model to test
+    :param y_true:
+    :param y_pred:
+    :return: accuracy metrics
     """
-    epsilons = [0.01, 0.1, 0.3, 0.5, 1, 2, 5, 10]
-    leaves_dp, internal_nodes_dp = [], []
-
-    for epsilon in epsilons:
-        tmp_nodes = []
-        tmp_leaves = []
-        for _ in range(10):
-            # only adding epsilon_dp_internal_nodes
-            clf = model_(max_bins=255, epsilon_dp_internal_nodes=epsilon).fit(X, y)
-            tmp_nodes.append(clf.score(X, y))
-            # only adding epsilon_dp_leaves
-            clf = model_(max_bins=255, epsilon_dp_leaves=epsilon).fit(X, y)
-            tmp_leaves.append(clf.score(X, y))
-        internal_nodes_dp.append(np.mean(tmp_nodes))
-        leaves_dp.append(np.mean(tmp_leaves))
-
-    print("R^2 w.r.t. leaf noise: ", leaves_dp)
-    print("R^2 w.r.t. inner node noise: ", internal_nodes_dp)
-
-    plt.plot(*[tuple(epsilons), tuple(internal_nodes_dp)])
-    plt.title("EXPONENTIAL MECHNANISM")
-    plt.xlabel('epsilon_dp_internal_nodes')
-    plt.ylabel('R^2')
-    plt.show()
-
-    plt.plot(*[tuple(epsilons[2:]), tuple(leaves_dp[2:])])
-    plt.title("LAPLACIAN MECHNANISM")
-    plt.xlabel('epsilon_dp_leaves')
-    plt.ylabel('R^2')
-    plt.show()
-
-
-def eval_preds(y_true, y_pred, regressor=True):
-    ''' Evaluate predictions'''
-    if regressor:  # need to go from continious predictions to labels
-        y_pred = 1.0 / (1.0 + np.exp(-y_pred))
-        y_pred = np.round(y_pred)
     print(f"Accuracy {round(accuracy_score(y_true, y_pred), 4)}")
     print(f"Baseline accuracy {round(1 - sum(y_true) / y_true.shape[0], 4)}")
     print(f"F1 score {round(f1_score(y_true, y_pred, average='binary'), 4)}")
@@ -60,6 +25,14 @@ def eval_preds(y_true, y_pred, regressor=True):
 def accuracy_dp_check(model_, X, y, threshold_fun, epsilons=EPSILONS, f1=False):
     """
     Test accuracy-privacy tradeoff out-of-sample.
+
+    :param model_: sklearn model to test
+    :param X:
+    :param y:
+    :param threshold_fun: threshold function. Needed since we use regression trees for classification purposes.
+    :param epsilons: list of diff. private epsilons to check performance metrics for.
+    :param f1: return f1 scores for exponential mechanism in addition to accuracy. Was added since privacy-utility
+                tradeoff was not observed for exponential mechanism.
     """
 
     leaves_dp, internal_nodes_dp, internal_nodes_dp_f1 = [], [], []
@@ -103,6 +76,45 @@ def accuracy_dp_check(model_, X, y, threshold_fun, epsilons=EPSILONS, f1=False):
     plt.title("LAPLACIAN MECHNANISM")
     plt.xlabel('epsilon_dp_leaves')
     plt.ylabel('accuracy')
+    plt.show()
+
+
+
+def run_model(model_, X, y):
+    """
+    Test utility-privacy tradeoff  in-sample.
+
+    :param model_: sklearn model to test
+    """
+    epsilons = [0.01, 0.1, 0.3, 0.5, 1, 2, 5, 10]
+    leaves_dp, internal_nodes_dp = [], []
+
+    for epsilon in epsilons:
+        tmp_nodes = []
+        tmp_leaves = []
+        for _ in range(10):
+            # only adding epsilon_dp_internal_nodes
+            clf = model_(max_bins=255, epsilon_dp_internal_nodes=epsilon).fit(X, y)
+            tmp_nodes.append(clf.score(X, y))
+            # only adding epsilon_dp_leaves
+            clf = model_(max_bins=255, epsilon_dp_leaves=epsilon).fit(X, y)
+            tmp_leaves.append(clf.score(X, y))
+        internal_nodes_dp.append(np.mean(tmp_nodes))
+        leaves_dp.append(np.mean(tmp_leaves))
+
+    print("R^2 w.r.t. leaf noise: ", leaves_dp)
+    print("R^2 w.r.t. inner node noise: ", internal_nodes_dp)
+
+    plt.plot(*[tuple(epsilons), tuple(internal_nodes_dp)])
+    plt.title("EXPONENTIAL MECHNANISM")
+    plt.xlabel('epsilon_dp_internal_nodes')
+    plt.ylabel('R^2')
+    plt.show()
+
+    plt.plot(*[tuple(epsilons[2:]), tuple(leaves_dp[2:])])
+    plt.title("LAPLACIAN MECHNANISM")
+    plt.xlabel('epsilon_dp_leaves')
+    plt.ylabel('R^2')
     plt.show()
 
 
