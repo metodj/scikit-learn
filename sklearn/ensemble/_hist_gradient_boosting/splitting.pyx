@@ -477,10 +477,6 @@ cdef class Splitter:
         )
         free(split_infos)
 
-        # if self.epsilon_dp_internal_nodes >= 0:
-        #     print("DP: ", out_dp.feature_idx, out_dp.bin_idx, out_dp.gain)
-        # print("Sklearn: ", out.feature_idx, out.bin_idx, out.gain)
-
         return out
 
     cdef unsigned int _find_best_feature_to_split_helper(
