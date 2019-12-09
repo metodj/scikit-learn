@@ -156,8 +156,8 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
         has_missing_values = np.isnan(X_train).any(axis=0).astype(np.uint8)
 
         # Differential privacy noise fist
-        if (self.epsilon_dp_noise_first is not None) or (self.delta_dp_noise_first is not None):
-            self._diff_privacy_noise_first(X, self.epsilon_dp_noise_first, self.delta_dp_noise_first)
+        if (self.epsilon_dp_noise_first is not None) and (self.delta_dp_noise_first is not None):
+            X_train = self._diff_privacy_noise_first(X_train, self.epsilon_dp_noise_first, self.delta_dp_noise_first)
 
         # Bin the data
         # For ease of use of the API, the user-facing GBDT classes accept the
@@ -647,6 +647,7 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
     # TODO:
     #  - do I need "is_training_data" parameter, i.e. do I need to consider validation data separately
     #  - do I need to add noise to y as well? Does it make a difference if y is continuous (regression) or categorical (classification)?
+    #  - important to add noise also to the test dataset (since model is fitted on noisy training data!)
     def _diff_privacy_noise_first(self, X, epsilon, delta, exponential_sampling="uniform"):
         """
         Add diff. private noise to the data directly. For continuous features Laplacian mechanism is used,
@@ -666,10 +667,13 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
 
         assert exponential_sampling in ["uniform", 'emipirical'], "Wrong exponential sampling parameter!"
 
+        # for numpy safety (when slicing, numpy does not create new dataframe)
+        X_ = X.copy()
+
         # iterate over features
-        for f_idx in range(X.shape[1]):
+        for f_idx in range(X_.shape[1]):
             # ignore missing values when adding noise
-            col_data = X[:, f_idx]
+            col_data = X_[:, f_idx].copy()
             missing_mask = np.isnan(col_data)
             n = len(col_data[~missing_mask])
 
@@ -678,7 +682,6 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
             if len(distinct_values) <= self.max_bins:  # categorical feature, exponential mechanism
                 m = len(distinct_values) - 1
                 p = (1-delta)/(m+np.exp(epsilon))
-                print(1-m*p)
                 unique, counts = np.unique(col_data[~missing_mask], return_counts=True)
                 assert m + 1 == len(unique)
                 # TODO: can we get rid of for loop below using numpy vector functions and broadcasting?
@@ -700,11 +703,12 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
             else:  # continuous feature, Laplacian mechanism
                 diameter = abs(np.max(col_data) - np.min(col_data))
                 b = diameter / (epsilon-np.log(1-delta))
-                print(b)
                 noise_vector = np.random.laplace(0, b, n)
                 col_data[~missing_mask] += noise_vector
 
-            X[:, f_idx] = col_data
+            X_[:, f_idx] = col_data
+
+        return X_
 
 
 
