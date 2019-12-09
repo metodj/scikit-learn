@@ -29,7 +29,8 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
     def __init__(self, loss, learning_rate, max_iter, max_leaf_nodes,
                  max_depth, min_samples_leaf, l2_regularization, max_bins,
                  warm_start, scoring, validation_fraction, n_iter_no_change,
-                 tol, verbose, random_state, epsilon_dp_leaves, epsilon_dp_internal_nodes):
+                 tol, verbose, random_state, epsilon_dp_leaves, epsilon_dp_internal_nodes,
+                 epsilon_dp_noise_first, delta_dp_noise_first):
         self.loss = loss
         self.learning_rate = learning_rate
         self.max_iter = max_iter
@@ -47,6 +48,8 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
         self.random_state = random_state
         self.epsilon_dp_leaves = epsilon_dp_leaves
         self.epsilon_dp_internal_nodes = epsilon_dp_internal_nodes
+        self.epsilon_dp_noise_first = epsilon_dp_noise_first
+        self.delta_dp_noise_first = delta_dp_noise_first
 
     def _validate_parameters(self):
         """Validate parameters passed to __init__.
@@ -152,13 +155,9 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
 
         has_missing_values = np.isnan(X_train).any(axis=0).astype(np.uint8)
 
-        ############ DIFFERENTIAL PRIVACY
-        # epsilon_dp = 1
-        # print(X_train + epsilon_dp)
-        # X_train += epsilon_dp
-
-        # noise_matrix = np.random.rand(X.shape[0], X_train.shape[1])
-        # X_train += 10*noise_matrix
+        # Differential privacy noise fist
+        if (self.epsilon_dp_noise_first is not None) or (self.delta_dp_noise_first is not None):
+            self._diff_privacy_noise_first(X, self.epsilon_dp_noise_first, self.delta_dp_noise_first)
 
         # Bin the data
         # For ease of use of the API, the user-facing GBDT classes accept the
@@ -172,10 +171,6 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
         self.bin_mapper_ = _BinMapper(n_bins=n_bins,
                                       random_state=self._random_seed)
         X_binned_train = self._bin_data(X_train, is_training_data=True)
-
-        ############ DATA vs BINNED DATA
-        # tmp = np.hstack((X_binned_train, X_train))
-        # print(tmp)
 
         if X_val is not None:
             X_binned_val = self._bin_data(X_val, is_training_data=False)
@@ -649,6 +644,73 @@ class BaseHistGradientBoosting(BaseEstimator, ABC):
     def _more_tags(self):
         return {'allow_nan': True}
 
+    # TODO:
+    #  - do I need "is_training_data" parameter, i.e. do I need to consider validation data separately
+    #  - do I need to add noise to y as well? Does it make a difference if y is continuous (regression) or categorical (classification)?
+    def _diff_privacy_noise_first(self, X, epsilon, delta, exponential_sampling="uniform"):
+        """
+        Add diff. private noise to the data directly. For continuous features Laplacian mechanism is used,
+        for categorical mechanism a variant of Exponential mechanism is used.
+        This function should be called prior to binning of the data. For equations and mathematical proofs see
+        examples 4.9 and 4.10 in:
+        https://repozitorij.uni-lj.si/Dokument.php?id=112731&lang=slv
+
+        :param X: data
+        :param epsilon: epsilon parameter of differential privacy
+        :param delta: delta parameter of differential privacy
+        :param exponential_sampling: wheter to use uniform sampling or sampling w.r.t. empirical distribution in
+        exponential mechanism. Possible values: uniform, empirical
+
+        :return:
+        """
+
+        assert exponential_sampling in ["uniform", 'emipirical'], "Wrong exponential sampling parameter!"
+
+        # iterate over features
+        for f_idx in range(X.shape[1]):
+            # ignore missing values when adding noise
+            col_data = X[:, f_idx]
+            missing_mask = np.isnan(col_data)
+            n = len(col_data[~missing_mask])
+
+            # check whether the feature is categorical or continuous
+            distinct_values = np.unique(col_data)
+            if len(distinct_values) <= self.max_bins:  # categorical feature, exponential mechanism
+                m = len(distinct_values) - 1
+                p = (1-delta)/(m+np.exp(epsilon))
+                print(1-m*p)
+                unique, counts = np.unique(col_data[~missing_mask], return_counts=True)
+                assert m + 1 == len(unique)
+                # TODO: can we get rid of for loop below using numpy vector functions and broadcasting?
+                for i in range(len(col_data)):
+                    if not missing_mask[i]:
+                        bernoulli_draw = np.random.binomial(1, 1-m*p)
+                        if bernoulli_draw == 1:  # keep feature value unchanged
+                            continue
+                        else:  # change feature value, sample from other features
+                            value = col_data[i]
+                            value_ind = np.where(unique==value)[0][0]
+                            unique_, counts_ = np.delete(unique, value_ind), np.delete(counts, value_ind)
+                            if exponential_sampling == "uniform":
+                                col_data[i] = np.random.choice(unique_)
+                            else:
+                                counts_ = counts_ / sum(counts_)
+                                col_data[i] = np.random.choice(unique_, p=counts_)
+
+            else:  # continuous feature, Laplacian mechanism
+                diameter = abs(np.max(col_data) - np.min(col_data))
+                b = diameter / (epsilon-np.log(1-delta))
+                print(b)
+                noise_vector = np.random.laplace(0, b, n)
+                col_data[~missing_mask] += noise_vector
+
+            X[:, f_idx] = col_data
+
+
+
+
+
+
     @abstractmethod
     def _get_loss(self):
         pass
@@ -804,7 +866,8 @@ class HistGradientBoostingRegressor(RegressorMixin, BaseHistGradientBoosting):
                  min_samples_leaf=20, l2_regularization=0., max_bins=255,
                  warm_start=False, scoring=None, validation_fraction=0.1,
                  n_iter_no_change=None, tol=1e-7, verbose=0,
-                 random_state=None, epsilon_dp_leaves=None, epsilon_dp_internal_nodes=-1.0):
+                 random_state=None, epsilon_dp_leaves=None, epsilon_dp_internal_nodes=-1.0,
+                 epsilon_dp_noise_first=None, delta_dp_noise_first=None):
         super(HistGradientBoostingRegressor, self).__init__(
             loss=loss, learning_rate=learning_rate, max_iter=max_iter,
             max_leaf_nodes=max_leaf_nodes, max_depth=max_depth,
@@ -814,7 +877,8 @@ class HistGradientBoostingRegressor(RegressorMixin, BaseHistGradientBoosting):
             validation_fraction=validation_fraction,
             n_iter_no_change=n_iter_no_change, tol=tol, verbose=verbose,
             random_state=random_state, epsilon_dp_leaves=epsilon_dp_leaves,
-            epsilon_dp_internal_nodes=epsilon_dp_internal_nodes)
+            epsilon_dp_internal_nodes=epsilon_dp_internal_nodes,
+            epsilon_dp_noise_first=epsilon_dp_noise_first, delta_dp_noise_first=delta_dp_noise_first)
 
     def predict(self, X):
         """Predict values for X.
@@ -988,7 +1052,8 @@ class HistGradientBoostingClassifier(BaseHistGradientBoosting,
                  max_leaf_nodes=31, max_depth=None, min_samples_leaf=20,
                  l2_regularization=0., max_bins=255, warm_start=False,
                  scoring=None, validation_fraction=0.1, n_iter_no_change=None,
-                 tol=1e-7, verbose=0, random_state=None, epsilon_dp_leaves=None, epsilon_dp_internal_nodes=-1.0):
+                 tol=1e-7, verbose=0, random_state=None, epsilon_dp_leaves=None, epsilon_dp_internal_nodes=-1.0,
+                 epsilon_dp_noise_first=None, delta_dp_noise_first=None):
         super(HistGradientBoostingClassifier, self).__init__(
             loss=loss, learning_rate=learning_rate, max_iter=max_iter,
             max_leaf_nodes=max_leaf_nodes, max_depth=max_depth,
@@ -998,7 +1063,9 @@ class HistGradientBoostingClassifier(BaseHistGradientBoosting,
             validation_fraction=validation_fraction,
             n_iter_no_change=n_iter_no_change, tol=tol, verbose=verbose,
             random_state=random_state, epsilon_dp_leaves=epsilon_dp_leaves,
-            epsilon_dp_internal_nodes=epsilon_dp_internal_nodes)
+            epsilon_dp_internal_nodes=epsilon_dp_internal_nodes,
+            epsilon_dp_noise_first=epsilon_dp_noise_first,
+            delta_dp_noise_first=delta_dp_noise_first)
 
     def predict(self, X):
         """Predict classes for X.
