@@ -128,7 +128,8 @@ class XGBoostFederated:
 
         return model
 
-    # TODO: implement nr_nodes argument
+    # TODO: implement nr_nodes argument (currently supports only setting with 2 cients)
+    # TODO: implement random order of building trees (to improve privacy)
     def train_federated(self, params, nr_iter, node_to_eval, nr_nodes =2, booster=False, average_gradient=False,
                         dump=False, batching=False, polish_with_update=False):
         """

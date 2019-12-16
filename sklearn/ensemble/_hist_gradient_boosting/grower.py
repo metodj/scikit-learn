@@ -279,6 +279,8 @@ class TreeGrower:
             self._finalize_leaf(self.root)
             return
 
+        # [2.12.2019] here we could add noise to the data, NoiseFirst approach
+
         self.root.histograms = self.histogram_builder.compute_histograms_brute(
             self.root.sample_indices)
         self._compute_best_split_and_push(self.root)
@@ -292,7 +294,11 @@ class TreeGrower:
         (min_hessians_to_split, min_gain_to_split, min_samples_leaf)
         """
         max_nr_bins = max(self.n_bins_non_missing + 1)
-        # print(max_nr_bins)
+
+        # [2.12.2019] here we could modify node.histograms, this would probably be StructureFirst approach
+
+        # print(np.asarray(node.histograms))
+
         node.split_info = self.splitter.find_node_split(
             node.n_samples, max_nr_bins, self.n_features, node.histograms, node.sum_gradients,
             node.sum_hessians)
@@ -397,6 +403,9 @@ class TreeGrower:
             # smallest number of samples, and the subtraction trick O(n_bins)
             # on the other one.
             tic = time()
+
+            # [2.12.2019] here we could add noise to the data, NoiseFirst approach
+
             smallest_child.histograms = \
                 self.histogram_builder.compute_histograms_brute(
                     smallest_child.sample_indices)
