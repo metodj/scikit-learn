@@ -87,6 +87,7 @@ class XGBoostFederated:
         dtrain, dtest = self.prepare_data(self.data, self.labels, self.testsize, centralized=True)
 
         model = xgb.Booster(params, [dtrain])
+        # model = xgb.Booster(params)
         if dump:
             model.dump_model("initialize.txt")
 
@@ -183,8 +184,8 @@ class XGBoostFederated:
 
             else:  # in this case we do not consider average_gradient since it seems to perform much worse...
                 model_federated = xgb.train(params, dtrain1, num_boost_round=1, xgb_model=model_federated)
-                # in the framework, here we the model will be saved on the first client, then sent to the master node,
-                # master will sent the model to the second client, that will load the model etc.
+                # in the framework, here the model will be saved on the first client, then sent to the master node,
+                # master will send the model to the second client, that will load the model etc.
                 model_federated = xgb.train(params, dtrain2, num_boost_round=1, xgb_model=model_federated)
 
         if polish_with_update:
@@ -261,49 +262,153 @@ class XGBoostFederated:
         print(model_xgboost.best_params_)
         return model_xgboost
 
+    @staticmethod
+    def prepare_data_v2(train, label, testsize, centralized, nr_nodes=2, batching=False):
 
-######################## TELCO DATASET ##################################################
-# data preprocessing - XGB can only work with numerical features...
-data = pd.read_csv("WA_Fn-UseC_-Telco-Customer-Churn.csv")
-data['TotalCharges'] = data['TotalCharges'].replace(" ", 0).astype('float32')
-categorical_cols = list(set(list(data.columns)) - set(['tenure', 'MonthlyCharges', 'TotalCharges', 'customerID']))
-data_encoded = pd.get_dummies(data, columns=categorical_cols, drop_first=True)
-data_encoded.TotalCharges = pd.to_numeric(data_encoded['TotalCharges'],errors='coerce')
+        Xtrain, Xtest, ytrain, ytest = train_test_split(train, label, test_size=testsize, random_state=42)
 
-X, y = data_encoded.loc[:, ~data_encoded.columns.isin(['Churn_Yes', 'customerID'])], data_encoded.Churn_Yes
-nr_iter_ = 20
+        if centralized:
+            dtrain = xgb.DMatrix(Xtrain, label=ytrain)
+            dtest = xgb.DMatrix(Xtest, label=ytest)
+            return [dtrain, dtest]
+
+        else:
+            # example we need to init Booster model
+            example = xgb.DMatrix(Xtrain.iloc[:2, :], label=ytrain.iloc[:2])
+
+            def unison_shuffled_copies(a, b):
+                assert len(a) == len(b)
+                p = np.random.permutation(len(a))
+                return a.iloc[p, :], b[p]
+
+            Xtrain, ytrain = unison_shuffled_copies(Xtrain, ytrain)
+            Xtest, ytest = unison_shuffled_copies(Xtest, ytest)
+
+            N_train = int(len(Xtrain) / nr_nodes)
+            N_test = int(len(Xtest) / nr_nodes)
+
+            if batching:
+                local_datasets = [0] * 4 * nr_nodes
+            else:
+                local_datasets = [0] * 2 * nr_nodes
+
+            for i in range(nr_nodes):
+                if batching:
+                    local_datasets[4 * i] = Xtrain.iloc[N_train * i:N_train * (i + 1), :]
+                    local_datasets[4 * i + 1] = ytrain.iloc[N_train * i:N_train * (i + 1)]
+                    local_datasets[4 * i + 2] = Xtest.iloc[N_test * i:N_test * (i + 1), :]
+                    local_datasets[4 * i + 3] = ytest.iloc[N_test * i:N_test * (i + 1)]
+
+                else:
+                    local_datasets[2 * i] = xgb.DMatrix(Xtrain.iloc[N_train * i:N_train * (i + 1), :],
+                                                        ytrain.iloc[N_train * i:N_train * (i + 1)])
+                    local_datasets[2 * i + 1] = xgb.DMatrix(Xtest.iloc[N_test * i:N_test * (i + 1), :],
+                                                            ytest.iloc[N_test * i:N_test * (i + 1)])
+
+            local_datasets.append(example)
+            return local_datasets
+
+    def train_federated_v2(self, params, nr_iter, node_to_eval, nr_nodes=2):
+        """
+        :param params:
+        :param nr_iter:
+        :param node_to_eval:
+        :param nr_nodes:
+
+        :return:
+        """
+
+        # returns list: [dtrain1, dtest1, dtrain2, dtest2, ... , dtrainnr_nodes, dtestnr_nodes, example]
+        datasets = self.prepare_data_v2(self.data, self.labels, self.testsize,
+                                        nr_nodes=nr_nodes, centralized=False)
+
+        model_federated = xgb.Booster(params, [datasets[-1]])
+
+        for i in range(nr_iter):
+            for j in range(nr_nodes):
+                model_federated = xgb.train(params, datasets[2 * j],
+                                            num_boost_round=1, xgb_model=model_federated)
+            # TODO: print accuracy after every round, break if accuracy does not improve
+
+        assert node_to_eval in range(1, nr_nodes + 1)
+
+        train_local = datasets[2 * (node_to_eval - 1)]
+        test_local = datasets[2 * (node_to_eval - 1) + 1]
+
+        print("----------Federated results for node {} (in-sample)----------".format(node_to_eval))
+        print(self.eval_preds(model_federated, train_local))
+
+        print("----------Federated results for node {} (out-of-sample)----------".format(node_to_eval))
+        print(self.eval_preds(model_federated, test_local))
+
+        return model_federated
+
+    def train_local_v2(self, params, nr_iter, node_to_eval, nr_nodes=2):
+
+        # returns list: [dtrain1, dtest1, dtrain2, dtest2, ... , dtrainnr_nodes, dtestnr_nodes, example]
+        datasets = self.prepare_data_v2(self.data, self.labels, self.testsize,
+                                        nr_nodes=nr_nodes, centralized=False)
+
+        assert node_to_eval in range(1, nr_nodes + 1)
+        train_local = datasets[2 * (node_to_eval - 1)]
+        test_local = datasets[2 * (node_to_eval - 1) + 1]
+
+        model_local = xgb.Booster(params, [train_local])
+
+        model_local = xgb.train(params, train_local, num_boost_round=nr_iter, xgb_model=model_local)
+
+        print("----------Baseline local results for node {}(in-sample)----------".format(node_to_eval))
+        print(self.eval_preds(model_local, train_local))
+
+        print("----------Baseline local results for node {}(out-of-sample)----------".format(node_to_eval))
+        print(self.eval_preds(model_local, test_local))
+        return model_local
 
 
-# TODO: bring in "nthread" param
-params_ = {'max_depth': 4, 'eta': 0.1, 'verbosity': 1, 'max_delta_step': 0,
-                'scale_pos_weight': 1.5, 'objective': 'binary:logitraw',
-                    'tree_method':'hist', 'max_bin':250, 'nthread':-1}
-# 'booster': 'dart','rate_drop': 0.1, 'skip_drop': 0.5}
-# 'updater': 'grow_colmaker,prune,sync'
-# 'grow_policy':'lossguide', 'max_leaves':2, 'colsample_bytree':0.9
 
 
-parametersCV = {"learning_rate": [0.1, 0.01, 0.001],
-               "gamma" : [0.01, 0.1, 0.3, 0.5, 1, 1.5, 2],
-               "max_depth": [2, 4, 7, 10],
-               "colsample_bytree": [0.3, 0.6, 0.8, 1.0],
-               "subsample": [0.2, 0.4, 0.5, 0.6, 0.7],
-               "reg_alpha": [0, 0.5, 1],
-               "reg_lambda": [1, 1.5, 2, 3, 4.5],
-               "min_child_weight": [1, 3, 5, 7],
-               "n_estimators": [10, 100, 250, 500, 1000],
-               "scale_pos_weight": [1, 1.5, 1.8, 2, 2.7, 3]}
-
-
-if __name__ == '__main__':
-    # start = time.time()
-
-    tmp = XGBoostFederated(X, y, 0.2)
-    tmp_model3 = tmp.train_local(params_, nr_iter_, 1)
-    tmp_model = tmp.train_centralized(params_, nr_iter_)
-    tmp_model2 = tmp.train_federated(params_, nr_iter_, 1, dump=True, polish_with_update=True)
-    tmp_model3 = tmp.train_local(params_, nr_iter_, 1)
-    # tmp_model4 = tmp.randomizedSearchCV(parametersCV, 5, 10)
-
-    # print("time elapsed: ", time.time()-start)
+# ######################## TELCO DATASET ##################################################
+# # data preprocessing - XGB can only work with numerical features...
+# data = pd.read_csv("WA_Fn-UseC_-Telco-Customer-Churn.csv")
+# data['TotalCharges'] = data['TotalCharges'].replace(" ", 0).astype('float32')
+# categorical_cols = list(set(list(data.columns)) - set(['tenure', 'MonthlyCharges', 'TotalCharges', 'customerID']))
+# data_encoded = pd.get_dummies(data, columns=categorical_cols, drop_first=True)
+# data_encoded.TotalCharges = pd.to_numeric(data_encoded['TotalCharges'],errors='coerce')
+#
+# X, y = data_encoded.loc[:, ~data_encoded.columns.isin(['Churn_Yes', 'customerID'])], data_encoded.Churn_Yes
+# nr_iter_ = 20
+#
+#
+# # TODO: bring in "nthread" param
+# params_ = {'max_depth': 4, 'eta': 0.1, 'verbosity': 1, 'max_delta_step': 0,
+#                 'scale_pos_weight': 1.5, 'objective': 'binary:logitraw',
+#                     'tree_method':'hist', 'max_bin':250, 'nthread':-1}
+# # 'booster': 'dart','rate_drop': 0.1, 'skip_drop': 0.5}
+# # 'updater': 'grow_colmaker,prune,sync'
+# # 'grow_policy':'lossguide', 'max_leaves':2, 'colsample_bytree':0.9
+#
+#
+# parametersCV = {"learning_rate": [0.1, 0.01, 0.001],
+#                "gamma" : [0.01, 0.1, 0.3, 0.5, 1, 1.5, 2],
+#                "max_depth": [2, 4, 7, 10],
+#                "colsample_bytree": [0.3, 0.6, 0.8, 1.0],
+#                "subsample": [0.2, 0.4, 0.5, 0.6, 0.7],
+#                "reg_alpha": [0, 0.5, 1],
+#                "reg_lambda": [1, 1.5, 2, 3, 4.5],
+#                "min_child_weight": [1, 3, 5, 7],
+#                "n_estimators": [10, 100, 250, 500, 1000],
+#                "scale_pos_weight": [1, 1.5, 1.8, 2, 2.7, 3]}
+#
+#
+# if __name__ == '__main__':
+#     # start = time.time()
+#
+#     tmp = XGBoostFederated(X, y, 0.2)
+#     tmp_model3 = tmp.train_local(params_, nr_iter_, 1)
+#     tmp_model = tmp.train_centralized(params_, nr_iter_)
+#     tmp_model2 = tmp.train_federated(params_, nr_iter_, 1, dump=True, polish_with_update=True)
+#     tmp_model3 = tmp.train_local(params_, nr_iter_, 1)
+#     # tmp_model4 = tmp.randomizedSearchCV(parametersCV, 5, 10)
+#
+#     # print("time elapsed: ", time.time()-start)
 
